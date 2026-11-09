@@ -22,6 +22,12 @@ python3 hookscore.py --hook "one line"      # score a single one
 python3 beats.py script.txt --target 30     # timed beat sheet before you shoot
 ```
 
+Both tools read Italian as well as English: number words ("sei mesi",
+"duemila euro"), "4.000 €", elisions ("l'acido"), Italian openers, greetings,
+preambles and stopwords. The 26 formulas in `hooks.json` are written in
+English: use the shape, write the line in Italian. Their `match` regexes are
+English too, so `swipe.py` leaves Italian hooks unclassified.
+
 ## Before you write
 
 1. Read `~/.claude/instagram/voice.md` if it exists. That is the user's voice

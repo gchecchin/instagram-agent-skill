@@ -27,6 +27,20 @@ vocabulary that only shows up in captions and voiceovers. It is meant to be
 edited. If the user has a word they always use that the lexicon strips, take it
 out of the file.
 
+**Italian.** Both tools detect the language from its function words and switch
+lexicon: 133 Italian terms with Italian replacements that keep gender and
+number ("fondamentale", "un vero e proprio", "nel panorama attuale",
+"seguimi per altri consigli"), 13 Italian structural tells ("non è solo X, è
+Y", "non si tratta di X", "X, Y e Z.", and the clinic brochure line: "la tua
+migliore versione", "risultati straordinari", "pelle radiosa"). The emoji,
+hashtag, caps and bullet tells apply to both. In Italian the VOICE check reads
+casual markers ("tipo", "cioè", "un sacco") instead of contractions, and
+counts person in the verb ("ho", "fai") as well as the pronoun, because Italian
+drops the subject. A line too short to show its language ("Sei mesi. Zero
+risultati.") reads as English: pass `--lang it`. The Italian thresholds were
+set on a handful of captions, not a corpus, so trust the direction more than
+the number.
+
 ## Why this matters more on Instagram than it looks
 
 Captions are short and scripts get said out loud. A written-sounding line in a

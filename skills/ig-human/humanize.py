@@ -37,12 +37,36 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LEX = os.path.join(HERE, "slop.json")
 
 URL_RE = re.compile(r"https?://\S+|www\.\S+|\S+@\S+\.\S+")
-SENT_RE = re.compile(r"[^.!?\n]+[.!?]*")
+SENT_RE = re.compile(r"(?:[^.!?\n]|\.(?=\d))+[.!?]*")    # "4.000" is not a full stop
 
 
 def load_lexicon(path=LEX):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def language(text, lex, forced=None):
+    """'it' when the draft reads Italian, else 'en'. Counts function words."""
+    if forced in ("en", "it"):
+        return forced
+    low = re.findall(r"[a-zà-öø-ÿ]+", text.lower())
+    it = sum(1 for w in low if w in lex["languages"]["it"]["function"])
+    en = sum(1 for w in low if w in lex["languages"]["en"]["function"])
+    return "it" if it > en else "en"
+
+
+def pick(entries, lang):
+    """The lexicon entries for one language. No lang means English."""
+    return [e for e in entries if e.get("lang", "en") in (lang, "any")]
+
+
+def term_pattern(find):
+    """Whole-word pattern for a lexicon term. A term ending in "?" or "'" has
+    no word boundary after it, and an apostrophe may arrive curly."""
+    body = re.escape(find).replace(r"\ ", r"\s+").replace("'", "['’]")
+    head = r"\b" if re.match(r"\w", find) else ""
+    tail = r"\b" if re.search(r"\w$", find) else ""
+    return re.compile(head + body + tail, re.IGNORECASE)
 
 
 def _cp(spec):
@@ -133,8 +157,7 @@ def pass_lexical(text, lex):
                      key=lambda e: len(e["find"]), reverse=True)
     for entry in entries:
         find = entry["find"]
-        pattern = re.compile(r"\b" + re.escape(find).replace(r"\ ", r"\s+") + r"\b",
-                             re.IGNORECASE)
+        pattern = term_pattern(find)
         found = pattern.findall(text)
         if not found:
             continue
@@ -159,7 +182,8 @@ def pass_lexical(text, lex):
     text = re.sub(r"\n{3,}", "\n\n", text)
     # An em dash that became a comma, followed by a sentence connective, leaves
     # a splice ("is important, also, it's proof"). Promote it to a full stop.
-    text = re.sub(r",\s*(also|so|still|basically|in the end)\s*,\s*",
+    text = re.sub(r",\s*(also|so|still|basically|in the end|poi|quindi|però|alla fine|cioè)"
+                  r"\s*,\s*",
                   lambda m: ". " + m.group(1)[0].upper() + m.group(1)[1:] + ", ", text)
     return text, hits
 
@@ -196,15 +220,17 @@ def restore_capitals(original, text):
     a deliberately lower-case voice is a style, not an artefact, and shouting
     over it would be exactly the kind of thing this script exists to stop.
     """
-    starts = re.findall(r"(?:^|[.!?]\s+|\n)\s*([A-Za-z])", original)
+    starts = re.findall(r"(?:^|[.!?]\s+|\n)\s*([A-Za-zÀ-ÖØ-öø-ÿ])", original)
     if not starts or sum(1 for c in starts if c.isupper()) * 2 < len(starts):
         return text
-    return re.sub(r"(?:^|(?<=[.!?] )|(?<=[.!?]\n)|(?<=\n))\s*([a-z])",
+    return re.sub(r"(?:^|(?<=[.!?] )|(?<=[.!?]\n)|(?<=\n))\s*([a-zà-öø-ÿ])",
                   lambda m: m.group(0)[:-1] + m.group(1).upper(), text)
 
 
-def humanize(text, lex):
+def humanize(text, lex, lang=None):
     raw_for_case = text
+    lang = language(text, lex, lang)
+    lex = dict(lex, **{k: pick(lex[k], lang) for k in ("words", "phrases", "structures")})
     text, urls = protect_urls(text)
     text, inv = pass_invisible(text, lex)
     text, typo = pass_typographic(text, lex)
@@ -212,6 +238,7 @@ def humanize(text, lex):
     text = restore_capitals(raw_for_case, text)
     text = restore_urls(text, urls)
     return text.strip() + "\n", {
+        "language": lang,
         "invisible": inv,
         "typographic": typo,
         "lexical": lexi,
@@ -227,7 +254,7 @@ def render_report(report, out=sys.stderr):
         + sum(h["count"] for h in report["typographic"]) \
         + sum(h["count"] for h in report["lexical"])
 
-    head("HUMANIZE REPORT")
+    head("HUMANIZE REPORT" + ("  ·  italiano" if report["language"] == "it" else ""))
     print(f"{total} machine artefacts removed, "
           f"{len(report['structures'])} structural tells flagged for rewrite", file=out)
 
@@ -247,7 +274,7 @@ def render_report(report, out=sys.stderr):
         head("4. STRUCTURAL TELLS  (not auto-fixed - rewrite these yourself)")
         for h in report["structures"]:
             print(f"  {h['count']:>3}x  {h['name']}\n        {h['fix']}", file=out)
-    if not any(report.values()):
+    if not any(report[k] for k in ("invisible", "typographic", "lexical", "structures")):
         head("CLEAN")
         print("  Nothing to strip.", file=out)
     print("", file=out)
@@ -260,11 +287,13 @@ def main():
     ap.add_argument("--report", action="store_true", help="print what changed, to stderr")
     ap.add_argument("--json", action="store_true", help="emit {text, report} as JSON")
     ap.add_argument("--lexicon", default=LEX, help="path to slop.json")
+    ap.add_argument("--lang", choices=["auto", "en", "it"], default="auto",
+                    help="language of the draft (default: detected)")
     args = ap.parse_args()
 
     raw = sys.stdin.read() if args.input == "-" else open(args.input, encoding="utf-8").read()
     lex = load_lexicon(args.lexicon)
-    clean, report = humanize(raw, lex)
+    clean, report = humanize(raw, lex, args.lang)
 
     if args.json:
         print(json.dumps({"text": clean, "report": report}, indent=2, ensure_ascii=False))

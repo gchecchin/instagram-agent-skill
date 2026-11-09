@@ -32,16 +32,40 @@ import unicodedata
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEX = os.path.join(HERE, "slop.json")
 
-SENT_RE = re.compile(r"[^.!?\n]+[.!?]*")
-WORD_RE = re.compile(r"[A-Za-z']+")
+SENT_RE = re.compile(r"(?:[^.!?\n]|\.(?=\d))+[.!?]*")    # "4.000" is not a full stop
+WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ']+")
 CONTRACTIONS = re.compile(r"\b\w+'(?:s|t|re|ve|ll|d|m)\b", re.IGNORECASE)
 PRONOUNS = re.compile(r"\b(i|me|my|mine|we|us|our|you|your)\b", re.IGNORECASE)
-NUMBERS = re.compile(r"\b\d[\d,.]*%?\b|\$\d")
-PROPER = re.compile(r"(?<![.!?]\s)(?<!^)\b[A-Z][a-z]{2,}\b", re.MULTILINE)
+NUMBERS = re.compile(r"\b\d[\d,.]*%?\b|[$€]\d")
+PROPER = re.compile(r"(?<![.!?]\s)(?<!^)\b[A-Z][a-zà-öø-ÿ]{2,}\b", re.MULTILINE)
 
 
 def clamp(n):
     return max(0.0, min(100.0, n))
+
+
+def language(text, lex, forced=None):
+    """'it' when the draft reads Italian, else 'en'. Counts function words."""
+    if forced in ("en", "it"):
+        return forced
+    low = re.findall(r"[a-zà-öø-ÿ]+", text.lower())
+    it = sum(1 for w in low if w in lex["languages"]["it"]["function"])
+    en = sum(1 for w in low if w in lex["languages"]["en"]["function"])
+    return "it" if it > en else "en"
+
+
+def pick(entries, lang):
+    """The lexicon entries for one language. No lang means English."""
+    return [e for e in entries if e.get("lang", "en") in (lang, "any")]
+
+
+def term_pattern(find):
+    """Whole-word pattern for a lexicon term. A term ending in "?" or "'" has
+    no word boundary after it, and an apostrophe may arrive curly."""
+    body = re.escape(find).replace(r"\ ", r"\s+").replace("'", "['’]")
+    head = r"\b" if re.match(r"\w", find) else ""
+    tail = r"\b" if re.search(r"\w$", find) else ""
+    return re.compile(head + body + tail, re.IGNORECASE)
 
 
 def scale(value, human, machine):
@@ -89,9 +113,7 @@ def check_slop(text, lex):
         return 50.0, "empty"
     hits, found = 0, []
     for entry in lex["words"] + lex["phrases"]:
-        pattern = re.compile(r"\b" + re.escape(entry["find"]).replace(r"\ ", r"\s+") + r"\b",
-                             re.IGNORECASE)
-        n = len(pattern.findall(text))
+        n = len(term_pattern(entry["find"]).findall(text))
         if n:
             hits += n
             found.append(entry["find"])
@@ -118,14 +140,27 @@ def check_fingerprint(text):
     return score, detail
 
 
-def check_voice(text, lex):
+def check_voice(text, lex, lang="en"):
     """Contractions, person, and the shapes models default to."""
     w = words(text)
     if len(w) < 25:
         return 50.0, "too short to judge"
     per100 = 100 / len(w)
-    contractions = len(CONTRACTIONS.findall(text)) * per100
-    person = len(PRONOUNS.findall(text)) * per100
+    if lang == "it":
+        # Italian has no contractions to count, and it drops the subject
+        # pronoun. So it reads casual markers ("tipo", "cioè", "un sacco") and
+        # person in the verb ("ho", "fai") as well as in the pronoun.
+        markers = lex["languages"]["it"]
+        person_words = set(markers["person"])
+        casual_label = "casual markers"
+        contractions = sum(len(term_pattern(m).findall(text)) for m in markers["casual"]) * per100
+        person = sum(1 for x in w if x.lower().strip("'") in person_words) * per100
+        casual_human = 2.0
+    else:
+        casual_label = "contractions"
+        contractions = len(CONTRACTIONS.findall(text)) * per100
+        person = len(PRONOUNS.findall(text)) * per100
+        casual_human = 3.0
     tells = 0
     names = []
     for s in lex["structures"]:
@@ -138,13 +173,13 @@ def check_voice(text, lex):
             names.append(s["id"])
     bullets = [len(b.split()) for b in re.findall(r"(?m)^\s*[-*•]\s+(.+)$", text)]
     uniform = (len(bullets) >= 3 and statistics.pstdev(bullets) < 1.6)
-    score = (scale(contractions, human=3.0, machine=0.0) * 0.35
+    score = (scale(contractions, human=casual_human, machine=0.0) * 0.35
              + scale(person, human=8.0, machine=1.0) * 0.35
              + clamp(100 - tells * 22) * 0.30)
     if uniform:
         score -= 12
         names.append("uniform-bullets")
-    detail = (f"{contractions:.1f} contractions, {person:.1f} personal pronouns "
+    detail = (f"{contractions:.1f} {casual_label}, {person:.1f} personal pronouns "
               f"per 100 words, {tells} structural tell(s)")
     if names:
         detail += " [" + ", ".join(names[:4]) + "]"
@@ -154,13 +189,15 @@ def check_voice(text, lex):
 CHECKS = ["BURSTINESS", "SPECIFICITY", "SLOP DENSITY", "FINGERPRINT", "VOICE"]
 
 
-def run(text, lex):
+def run(text, lex, lang=None):
+    lang = language(text, lex, lang)
+    lex = dict(lex, **{k: pick(lex[k], lang) for k in ("words", "phrases", "structures")})
     results = {}
     results["BURSTINESS"] = check_burstiness(text)
     results["SPECIFICITY"] = check_specificity(text)
     results["SLOP DENSITY"] = check_slop(text, lex)
     results["FINGERPRINT"] = check_fingerprint(text)
-    results["VOICE"] = check_voice(text, lex)
+    results["VOICE"] = check_voice(text, lex, lang)
     scores = [results[c][0] for c in CHECKS]
     # The weakest check drags the verdict: a detector only needs one signal.
     overall = statistics.mean(scores) * 0.6 + min(scores) * 0.4
@@ -174,8 +211,9 @@ def bar(score, width=24):
     return "#" * filled + "." * (width - filled)
 
 
-def render(results, overall, verdict, label=None, out=sys.stdout):
-    title = "AI DETECTION PANEL" + (f"  -  {label}" if label else "")
+def render(results, overall, verdict, label=None, lang="en", out=sys.stdout):
+    title = ("AI DETECTION PANEL" + ("  ·  italiano" if lang == "it" else "")
+             + (f"  -  {label}" if label else ""))
     print("\n" + title, file=out)
     print("=" * max(len(title), 62), file=out)
     for name in CHECKS:
@@ -196,6 +234,8 @@ def main():
     ap.add_argument("compare", nargs="?", help="second file, to show before/after")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--lexicon", default=LEX)
+    ap.add_argument("--lang", choices=["auto", "en", "it"], default="auto",
+                    help="language of the draft (default: detected)")
     args = ap.parse_args()
 
     lex = json.load(open(args.lexicon, encoding="utf-8"))
@@ -207,21 +247,24 @@ def main():
 
     payload = []
     for name, text in targets:
-        results, overall, verdict = run(text, lex)
+        lang = language(text, lex, args.lang)
+        results, overall, verdict = run(text, lex, lang)
         payload.append({
             "source": name,
+            "language": lang,
             "checks": {k: {"score": round(v[0], 1), "detail": v[1]} for k, v in results.items()},
             "human_score": round(overall, 1),
             "verdict": verdict,
         })
 
     if args.json:
-        print(json.dumps(payload if args.compare else payload[0], indent=2))
+        print(json.dumps(payload if args.compare else payload[0], indent=2, ensure_ascii=False))
         return
 
     for (name, text), p in zip(targets, payload):
-        results, overall, verdict = run(text, lex)
-        render(results, overall, verdict, label=os.path.basename(name) if args.compare else None)
+        results, overall, verdict = run(text, lex, p["language"])
+        render(results, overall, verdict, label=os.path.basename(name) if args.compare else None,
+               lang=p["language"])
     if args.compare:
         a, b = payload
         delta = b["human_score"] - a["human_score"]

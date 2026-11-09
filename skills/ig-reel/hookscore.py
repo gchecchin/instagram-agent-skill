@@ -36,14 +36,16 @@ import re
 import statistics
 import sys
 
-WORD_RE = re.compile(r"[A-Za-z0-9$%'’-]+")
+WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9$€%'’-]+")
 NUMBER_RE = re.compile(
-    r"\$\s?\d[\d,]*(?:\.\d+)?"                       # money, whole
-    r"|\b\d[\d,]*(?:\.\d+)?\s?"                      # a figure, with or
+    r"[$€]\s?\d[\d,]*(?:\.\d+)*"                     # money, whole
+    r"|\b\d[\d,]*(?:\.\d+)*\s?"                      # a figure, with or
     r"(?:%|k\b|x\b|hrs?\b|hours?\b|mins?\b|minutes?\b"  # without a unit
-    r"|days?\b|weeks?\b|months?\b|years?\b)?",
+    r"|days?\b|weeks?\b|months?\b|years?\b"
+    r"|€|euro\b|or[ae]\b|minut[oi]\b|giorn[oi]\b|settiman[ae]\b|mes[ei]\b"
+    r"|ann[oi]\b|volte\b|sedute\b)?",
     re.IGNORECASE)
-PROPER_RE = re.compile(r"(?<!^)\b[A-Z][a-z]{2,}\b")
+PROPER_RE = re.compile(r"(?<!^)\b[A-Z][a-zà-öø-ÿ]{2,}\b")
 HASHTAG_RE = re.compile(r"(?:^|\s)#\w+")
 EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
 
@@ -95,12 +97,89 @@ IMPERATIVES = {
     "never", "always", "don't", "dont", "do", "put", "run", "check",
 }
 
+# Italian. Same five properties, same weights; only the vocabulary changes.
+# Number words compound ("duemila", "quarantacinque", "ventitré"), so they are
+# matched by shape rather than listed. "uno" and "una" stay out for the reason
+# "one" does, and "sei" is also "you are": it counts as six only when a unit
+# follows it ("sei mesi", not "sei sicura").
+IT_NUMBER_RE = re.compile(
+    r"(?:due|tre|tré|quattro|cinque|sei|sette|otto|nove|dieci|undici|dodici"
+    r"|tredici|quattordici|quindici|sedici|diciassette|diciotto|diciannove"
+    r"|(?:vent|trent|quarant|cinquant|sessant|settant|ottant|novant)[aio]?"
+    r"|cento|mille|mila|uno?|milion[ei]|miliard[oi])+")
+IT_UNITS = {
+    "mesi", "anni", "giorni", "ore", "minuti", "secondi", "settimane", "euro",
+    "volte", "sedute", "pazienti", "clienti", "persone", "punti", "chili",
+    "kg", "cm", "ml", "fiale", "siringhe",
+}
+# Italian elides articles and prepositions onto the next word ("l'acido",
+# "dell'anno", "c'è"). The word that carries meaning is the one after the
+# apostrophe. English contractions ("don't", "it's") keep theirs.
+ELISION_RE = re.compile(
+    r"^(?:l|un|dell|nell|all|dall|sull|coll|quest|quell|nessun|tutt|c|d|m|n|s|t|v)"
+    r"['’](.+)$")
+
+SPOKEN_NUMBERS |= {
+    "zero", "mezzo", "mezza", "metà", "doppio", "triplo", "dozzina",
+    "decine", "centinaia", "migliaia",
+}
+MONEY_WORDS |= {
+    "euro", "soldi", "percento", "centesimi", "milionario", "fatturato",
+    "guadagno", "guadagni", "profitto", "stipendio", "affitto",
+}
+STAKES |= {
+    "smetti", "smettila", "basta", "mai", "sbagliato", "sbagliata", "sbagliati",
+    "sbagliate", "errore", "errori", "sbaglio", "perso", "persa", "persi",
+    "perdere", "perdi", "costa", "costano", "costato", "costata", "costo",
+    "rovinato", "rovinata", "fallito", "fallita", "nessuno", "nessuna",
+    "niente", "nulla", "non", "neanche", "nemmeno", "licenziato", "cancellato",
+    "eliminato", "sostituito", "tagliato", "battuto", "gratis", "pagato",
+    "pagata", "risparmiato", "assunto", "primo", "prima", "vietato", "illegale",
+    "peggiore", "peggio", "odio", "odiavo", "sprecato", "sprecati", "spreco",
+    "buttato", "buttata", "buttati", "buttate",
+    "truffa", "bugia", "mentito", "verità", "segreto", "nascosto", "rubato",
+    "finché", "invece", "ma", "però", "tranne", "senza", "problema", "rischio",
+    "rischi", "pericolo", "pericoloso", "attenzione", "rimpianto", "vorrei",
+    "dovresti", "ancora", "già", "solo", "soltanto", "contro", "davvero",
+    "evita", "evitare",
+}
+WEAK_OPENERS += [
+    "allora", "ciao", "ragazzi", "buongiorno", "buonasera", "salve", "ehi",
+    "eccoci", "benvenuti", "benvenute", "oggi", "praticamente", "sinceramente",
+    "onestamente", "dunque", "insomma", "cioè", "beh", "ecco", "ascolta",
+    "ascoltate", "senti", "sentite", "volevo", "voglio", "vorrei", "vi voglio",
+    "in questo", "nel video", "hai mai", "avete mai", "ti sei", "vi siete",
+    "lo sai", "sapevi", "sapete", "c'è", "ci sono", "questo è", "questa è",
+    "una delle", "uno dei", "molti", "molte", "tanti", "tante", "se anche",
+    "quando si",
+]
+IMPERATIVES |= {
+    "smetti", "smettila", "ruba", "copia", "cancella", "prova", "guarda",
+    "leggi", "salva", "usa", "costruisci", "scrivi", "manda", "prendi",
+    "inizia", "metti", "controlla", "evita", "dimentica", "chiedi",
+    "mai", "sempre", "fai", "fallo", "provalo", "salvalo", "copiala",
+}
+IT_YOU = {
+    "tu", "ti", "te", "tuo", "tua", "tuoi", "tue", "voi", "vi", "vostro",
+    "vostra", "vostri", "vostre", "hai", "sei", "fai", "puoi", "devi", "sai",
+    "vuoi", "avete", "siete", "fate", "potete", "dovete", "sapete", "volete",
+}
+IT_ME = {
+    "io", "mi", "me", "mio", "mia", "miei", "mie", "noi", "ci", "nostro",
+    "nostra", "nostri", "nostre", "ho", "abbiamo", "sono",
+}
+
 DEALBREAKERS = [
-    (re.compile(r"(?i)^\s*(?:stop scrolling|don'?t scroll)"),
+    (re.compile(r"(?i)^\s*(?:stop scrolling|don'?t scroll"
+                r"|smetti(?:la)? di scorrere|non scorrere|non scrollare|fermati\b)"),
      "Opens with \"stop scrolling\". Asking for attention proves you have not earned it."),
-    (re.compile(r"(?i)\b(?:in (?:this|today'?s) (?:video|reel)|i'?m going to show you|i'?ll show you how)\b"),
+    (re.compile(r"(?i)\b(?:in (?:this|today'?s) (?:video|reel)|i'?m going to show you|i'?ll show you how"
+                r"|in questo (?:video|reel)|nel (?:video|reel) di oggi"
+                r"|(?:vi|ti) (?:mostro|faccio vedere|spiego|parlo)"
+                r"|(?:vi|ti) voglio (?:mostrare|parlare|spiegare))\b"),
      "Video preamble. Delete it and open on the payoff."),
-    (re.compile(r"(?i)^\s*(?:hey |hi |what'?s up |welcome )"),
+    (re.compile(r"(?i)^\s*(?:hey |hi |what'?s up |welcome "
+                r"|ciao\b|buongiorno\b|buonasera\b|salve\b|ehi\b|benvenut[ie]\b)"),
      "Greeting. Nobody came to the feed to be greeted."),
     (HASHTAG_RE,
      "Hashtag in the hook. Hashtags belong at the bottom of the caption, if anywhere."),
@@ -115,7 +194,28 @@ def clamp(n):
 
 def words(text):
     # "$18,000" is one word when it is spoken, so it is one word here too.
-    return WORD_RE.findall(re.sub(r"(?<=\d),(?=\d)", "", text))
+    # So is "4.000 €", which is how Italian writes the thousands.
+    return WORD_RE.findall(re.sub(r"(?<=\d),(?=\d)|(?<=\d)\.(?=\d{3}\b)", "", text))
+
+
+def terms(text):
+    """words(), lower-cased, with an Italian elision resolved to its word."""
+    out = []
+    for token in words(text):
+        t = token.lower().strip("'’")
+        m = ELISION_RE.match(t)
+        out.append(m.group(1) if m else t)
+    return out
+
+
+def spoken_number(low, i):
+    """Is low[i] a number said out loud, in English or in Italian."""
+    t = low[i]
+    if t in SPOKEN_NUMBERS:
+        return True
+    if t in ("un", "uno", "una") or not IT_NUMBER_RE.fullmatch(t):
+        return False
+    return t != "sei" or (i + 1 < len(low) and low[i + 1] in IT_UNITS)
 
 
 def check_length(text):
@@ -139,8 +239,8 @@ def check_specificity(text):
     """One concrete thing beats three abstract ones."""
     nums = [n.strip() for n in NUMBER_RE.findall(text) if n.strip()]
     propers = set(PROPER_RE.findall(text))
-    low = [w.lower().strip("'’") for w in words(text)]
-    spoken = [w for w in low if w in SPOKEN_NUMBERS or w in MONEY_WORDS]
+    low = terms(text)
+    spoken = [w for i, w in enumerate(low) if spoken_number(low, i) or w in MONEY_WORDS]
     hits = len(nums) + len(propers) + len(spoken)
     score = 15.0 if hits == 0 else clamp(45 + hits * 30)
     found = ", ".join(nums[:2] + sorted(propers)[:2] + spoken[:2])
@@ -150,10 +250,10 @@ def check_specificity(text):
 
 def check_stakes(text):
     """Tension, cost, negation. Something the viewer might lose."""
-    w = [x.lower().strip("'’") for x in words(text)]
+    w = terms(text)
     hits = [x for x in w if x in STAKES]
     markers = sorted(set(hits))
-    if re.search(r"\$\s?\d", text):
+    if re.search(r"[$€]\s?\d|\d\s?(?:€|euro\b)", text, re.IGNORECASE):
         markers.append("a price")
     n = len(markers)
     score = {0: 20.0, 1: 70.0}.get(n, 100.0)
@@ -167,17 +267,19 @@ def check_frontload(text):
     w = words(text)
     if not w:
         return 0.0, "empty"
-    low = [x.lower().strip("'’") for x in w]
-    opener = " ".join(low[:2])
+    raw = [x.lower().strip("'’") for x in w]
+    low = terms(text)
+    opener = " ".join(raw[:2])
     penalty = 0
     hit_opener = None
     for weak in WEAK_OPENERS:
-        if opener.startswith(weak) or low[0] == weak:
+        # Whole words only: "so" is not the start of "Solo" or "Someone".
+        if weak in (raw[0], opener):
             penalty, hit_opener = 30, weak
             break
     payload = None
     for i, token in enumerate(low):
-        if (token in STAKES or token in SPOKEN_NUMBERS or token in MONEY_WORDS
+        if (token in STAKES or spoken_number(low, i) or token in MONEY_WORDS
                 or NUMBER_RE.match(w[i]) or (i and PROPER_RE.match(w[i]))):
             payload = i
             break
@@ -200,12 +302,16 @@ def check_frontload(text):
 def check_address(text):
     """Aimed at one viewer, or floating in the air."""
     low = text.lower()
-    w = [x.lower().strip("'’") for x in words(text)]
-    if re.search(r"\b(you|your|you're|youre|yourself)\b", low):
+    w = terms(text)
+    if (re.search(r"\b(you|your|you're|youre|yourself)\b", low)
+            or any(t in IT_YOU and not spoken_number(w, i) for i, t in enumerate(w))):
         return 100.0, "speaks to the viewer"
     if w and w[0] in IMPERATIVES:
         return 90.0, f"imperative opener (\"{w[0]}\")"
-    if re.search(r"\b(i|my|me|we|our)\b", low):
+    # Italian says "don't" as "non" plus the infinitive: "Non fare il filler".
+    if len(w) > 1 and w[0] == "non" and re.search(r"(?:are|ere|ire)$", w[1]):
+        return 90.0, f"imperative opener (\"non {w[1]}\")"
+    if re.search(r"\b(i|my|me|we|our)\b", low) or any(t in IT_ME for t in w):
         return 70.0, "first person, no viewer named"
     return 35.0, "third person, nobody in the room"
 

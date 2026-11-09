@@ -23,19 +23,41 @@ Usage
 
 import argparse
 import json
+import os
 import re
 import sys
 
-WORD_RE = re.compile(r"[A-Za-z0-9$%'’-]+")
-SENT_RE = re.compile(r"[^.!?]+[.!?]*")
-CONCRETE_RE = re.compile(r"\$\s?\d|\b\d[\d,.]*\b|(?<!^)\b[A-Z][a-z]{2,}\b", re.MULTILINE)
+try:                                              # "six months" and "sei mesi" are
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from hookscore import spoken_number           # noqa: E402  as concrete as "6"
+except Exception:
+    spoken_number = None
+
+WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9$€%'’-]+")
+SENT_RE = re.compile(r"(?:[^.!?]|\.(?=\d))+[.!?]*")      # "4.000" is not a full stop
+CONCRETE_RE = re.compile(r"[$€]\s?\d|\b\d[\d,.]*\b|(?<!^)\b[A-Z][a-zà-öø-ÿ]{2,}\b",
+                         re.MULTILINE)
 STOPWORDS = {
     "the", "a", "an", "and", "or", "but", "if", "of", "to", "in", "on", "for",
     "with", "that", "this", "it", "is", "are", "was", "were", "be", "been",
     "you", "your", "i", "my", "me", "we", "our", "they", "them", "he", "she",
     "so", "just", "not", "no", "do", "did", "does", "have", "has", "had",
     "will", "can", "at", "as", "by", "from", "out", "up", "off", "one", "all",
+    # Italian
+    "il", "lo", "la", "gli", "le", "un", "uno", "una", "di", "da", "con", "su",
+    "per", "tra", "fra", "e", "ed", "o", "ma", "se", "che", "chi", "non", "è",
+    "sono", "era", "ho", "hai", "ha", "abbiamo", "hanno", "mi", "ti", "ci",
+    "vi", "si", "te", "io", "tu", "lui", "lei", "noi", "voi", "loro", "mio",
+    "mia", "tuo", "tua", "suo", "sua", "questo", "questa", "quello", "quella",
+    "del", "della", "dei", "delle", "degli", "al", "alla", "ai", "alle", "dal",
+    "dalla", "nel", "nella", "nei", "sul", "sulla", "più", "già", "poi",
+    "solo", "anche", "come", "così", "quando", "perché", "ora", "fa",
 }
+# Italian elides articles and prepositions onto the next word ("l'acido",
+# "dell'anno"). The loop check wants the word after the apostrophe.
+ELISION_RE = re.compile(
+    r"^(?:l|un|dell|nell|all|dall|sull|coll|quest|quell|nessun|tutt|c|d|m|n|s|t|v)"
+    r"['’](.+)$")
 
 HOOK_WINDOW = 3.0        # seconds. Past this, the thumb has already decided.
 MAX_BEAT = 4.0           # seconds on one idea with no change on screen.
@@ -44,7 +66,27 @@ ABSTRACT_RUN = 3         # beats in a row with nothing checkable in them.
 
 def words(text):
     # "$18,000" is one word when it is spoken, so it is one word here too.
-    return WORD_RE.findall(re.sub(r"(?<=\d),(?=\d)", "", text))
+    # So is "4.000 €", which is how Italian writes the thousands.
+    return WORD_RE.findall(re.sub(r"(?<=\d),(?=\d)|(?<=\d)\.(?=\d{3}\b)", "", text))
+
+
+def terms(text):
+    """words(), lower-cased, with an Italian elision resolved to its word."""
+    out = []
+    for token in words(text):
+        t = token.lower().strip("'’")
+        m = ELISION_RE.match(t)
+        out.append(m.group(1) if m else t)
+    return out
+
+
+def concrete(text):
+    """Numbers, prices and names, including numbers said as words."""
+    n = len(CONCRETE_RE.findall(text))
+    if spoken_number:
+        low = terms(text)
+        n += sum(1 for i in range(len(low)) if spoken_number(low, i))
+    return n
 
 
 def pretty(token):
@@ -98,7 +140,7 @@ def analyse(raw, wpm=165, target=None):
             "dur": round(dur, 2),
             "words": n,
             "text": text,
-            "concrete": len(CONCRETE_RE.findall(text)),
+            "concrete": concrete(text),
             "label": "",
             "flags": [],
         })
@@ -146,8 +188,8 @@ def analyse(raw, wpm=165, target=None):
             run, start = 0, None
 
     # Does the last line hand you back to the first one?
-    first = {w.lower() for w in words(rows[0]["text"]) if w.lower() not in STOPWORDS}
-    last = {w.lower() for w in words(rows[-1]["text"]) if w.lower() not in STOPWORDS}
+    first = {w for w in terms(rows[0]["text"]) if w not in STOPWORDS}
+    last = {w for w in terms(rows[-1]["text"]) if w not in STOPWORDS}
     loop = sorted(pretty(w) for w in first & last)
     if loop:
         notes.append(f"Loops: the last beat repeats \"{', '.join(loop[:3])}\" from the hook. "
